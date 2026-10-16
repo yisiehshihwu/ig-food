@@ -1,14 +1,9 @@
 {
-  "posted": {
-    "紅燒牛肉麵": {
-      "source": "manual"
-    },
-    "乾炒牛河": {
-      "source": "manual"
-    },
-    "三杯雞": {
-      "source": "manual"
-    }
-  },
-  "not_before": "2026-11-02T18:00+08:00"
+  "posted": {},
+  "not_before": "2026-10-16T19:00-04:00",
+  "priority": [
+    "紅燒牛肉麵",
+    "乾炒牛河",
+    "三杯雞"
+  ]
 }

@@ -1,10 +1,15 @@
-# 每天台灣時間 19:00 檢查一次，距離上次發文滿 5 天（POST_INTERVAL_DAYS）才真的發一篇。
-# 間隔判斷在 scripts/publish_ig.py 裡，這裡只負責每天叫它起來。
+# 每 5 天（POST_INTERVAL_DAYS）的美東時間 19:00 發一篇。發文時間的判斷在
+# scripts/publish_ig.py 裡（用 America/New_York 時區，會自動處理夏令/冬令時間），
+# 這裡只負責叫它起來。
 name: IG auto publish
 
 on:
   schedule:
-    - cron: "0 11 * * *" # UTC 11:00 = 台灣 19:00；GitHub 排程可能延遲幾十分鐘
+    # GitHub cron 只能寫 UTC：夏令時間（EDT）的 19:00 = UTC 23:00，冬令時間（EST）的 19:00
+    # = UTC 00:00。兩個都排，腳本會自己判斷當地時間到 19:00 沒、這天該不該發，不會重複發。
+    # GitHub 排程常延遲幾分鐘到幾十分鐘。
+    - cron: "0 23 * * *"
+    - cron: "0 0 * * *"
   workflow_dispatch:
     inputs:
       check_only:

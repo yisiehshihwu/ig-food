@@ -1,8 +1,10 @@
 """自動發 IG：每次執行最多發一篇，從 output/ 依序挑還沒發過的成品圖，貼文文字只放菜名。
 
-設計成在 GitHub Actions 上每天跑一次（.github/workflows/ig-publish.yml），由這支腳本
-自己判斷「距離上次發文滿 POST_INTERVAL_DAYS 天了沒」，沒滿就什麼都不做——GitHub 的
-cron 沒辦法直接表達「每 5 天」，所以間隔由這裡控制。只用標準函式庫，Actions 上不用裝套件。
+設計成在 GitHub Actions 上每天跑（.github/workflows/ig-publish.yml），由這支腳本自己判斷
+「是不是到了發文時間」：上次發文那天往後算 POST_INTERVAL_DAYS 天、當地 POST_TIME（預設
+美東 19:00）。GitHub 的 cron 只能寫 UTC、也不會處理夏令時間，所以 workflow 每天跑兩次
+（UTC 23:00 與 00:00，分別是夏令/冬令時間的美東 19:00），時間判斷一律在這裡用當地時區做。
+只用標準函式庫，Actions 上不用裝套件。
 
 發文用 Instagram 官方 Content Publishing API（graph.facebook.com）：
     1) POST /{ig-user-id}/media         image_url + caption -> 建立 container
@@ -11,9 +13,11 @@ cron 沒辦法直接表達「每 5 天」，所以間隔由這裡控制。只用
 API 會自己去抓 image_url，所以圖片必須放在公開網址（IMAGE_BASE_URL，例如 GitHub Pages）。
 
 發文進度記在 output/publish_state.json：
-    {"posted": {"三杯雞": {"posted_at": "...", "media_id": "...", "source": "api"}}, "not_before": null}
-- source 為 "manual" 代表是使用者自己在 Business Suite 發/排的，只是標記起來避免重複發。
-- not_before（ISO 時間）可選：在這個時間之前不自動發，用來避開 Business Suite 已經排好的貼文。
+    {"posted": {"三杯雞": {"posted_at": "...", "media_id": "...", "source": "api"}},
+     "not_before": null, "priority": ["紅燒牛肉麵"]}
+- source 為 "manual" 代表是在別處手動發過的，只是標記起來避免重複發。
+- not_before（ISO 時間）可選：在這個時間之前不自動發。
+- priority 可選：這些菜名插隊排在最前面（依列出的順序），其餘照 manifest 順序。
 
 子命令：
     next                        印出下一篇會發哪張、什麼時候發（不需要 token）
@@ -21,7 +25,8 @@ API 會自己去抓 image_url，所以圖片必須放在公開網址（IMAGE_BAS
     publish [--force]           到時間就發一篇；--force 忽略間隔立即發
     mark-posted <菜名>...       把手動發過/排過的菜名標記成已發
     unmark <菜名>...            取消標記
-    set-not-before <ISO時間>    設定最早自動發文時間（"none" 取消）
+    set-not-before <ISO時間>    設定最早自動發文時間（當地時間；"none" 取消）
+    set-priority <菜名>...      指定優先發的菜名與順序（"none" 清空）
 
 環境變數（publish 需要）：
     IG_USER_ID          Instagram 商業帳號的 ID
@@ -29,6 +34,8 @@ API 會自己去抓 image_url，所以圖片必須放在公開網址（IMAGE_BAS
     IMAGE_BASE_URL      output/ 圖片的公開網址前綴，例如 https://<帳號>.github.io/<repo>/output
     GRAPH_API_VERSION   預設 v26.0
     POST_INTERVAL_DAYS  預設 5
+    POST_TIME           預設 19:00（當地時間）
+    POST_TIMEZONE       預設 America/New_York（使用者在美東，會自動處理夏令/冬令時間）
 """
 
 import argparse
@@ -40,21 +47,21 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_ROOT / "output"
 MANIFEST_PATH = OUTPUT_DIR / "manifest.json"
 STATE_PATH = OUTPUT_DIR / "publish_state.json"
 
-TAIPEI = timezone(timedelta(hours=8))
-# GitHub cron 常延遲幾十分鐘，留半天緩衝，避免「差 10 分鐘滿 5 天」就整整晚一天
-INTERVAL_SLACK = timedelta(hours=12)
+LOCAL_TZ = ZoneInfo(os.environ.get("POST_TIMEZONE", "America/New_York"))
+POST_TIME = dtime.fromisoformat(os.environ.get("POST_TIME", "19:00"))
 
 
 def _now() -> datetime:
-    return datetime.now(TAIPEI)
+    return datetime.now(LOCAL_TZ)
 
 
 def _load_json(path: Path, default):
@@ -65,6 +72,7 @@ def _load_state() -> dict:
     state = _load_json(STATE_PATH, {})
     state.setdefault("posted", {})
     state.setdefault("not_before", None)
+    state.setdefault("priority", [])
     return state
 
 
@@ -87,22 +95,31 @@ def _caption(label: str) -> str:
     return re.sub(r"\d+$", "", label).strip() or label
 
 
+def _ordered_queue(state: dict) -> list[str]:
+    queue = _queue()
+    first = [l for l in state["priority"] if l in queue]
+    return first + [l for l in queue if l not in first]
+
+
 def _next_label(state: dict) -> str | None:
-    return next((l for l in _queue() if l not in state["posted"]), None)
+    return next((l for l in _ordered_queue(state) if l not in state["posted"]), None)
 
 
 def _next_due(state: dict) -> datetime | None:
-    interval = timedelta(days=float(os.environ.get("POST_INTERVAL_DAYS", "5")))
+    """下次發文時間 = 上次 API 發文那天 + 間隔天數的當地 POST_TIME；用「日期」算而不是精確
+    相隔幾小時，這樣 GitHub cron 延遲幾十分鐘也不會讓下一篇整整晚一天。"""
+    interval = int(os.environ.get("POST_INTERVAL_DAYS", "5"))
     api_times = [
-        datetime.fromisoformat(v["posted_at"])
+        datetime.fromisoformat(v["posted_at"]).astimezone(LOCAL_TZ)
         for v in state["posted"].values()
         if v.get("source") == "api" and v.get("posted_at")
     ]
     candidates = []
     if api_times:
-        candidates.append(max(api_times) + interval - INTERVAL_SLACK)
+        day = max(api_times).date() + timedelta(days=interval)
+        candidates.append(datetime.combine(day, POST_TIME, LOCAL_TZ))
     if state["not_before"]:
-        candidates.append(datetime.fromisoformat(state["not_before"]))
+        candidates.append(datetime.fromisoformat(state["not_before"]).astimezone(LOCAL_TZ))
     return max(candidates) if candidates else None
 
 
@@ -224,9 +241,39 @@ def cmd_set_not_before(args) -> None:
         state["not_before"] = None
     else:
         when = datetime.fromisoformat(args.when)
-        state["not_before"] = (when if when.tzinfo else when.replace(tzinfo=TAIPEI)).isoformat(timespec="minutes")
+        state["not_before"] = (when if when.tzinfo else when.replace(tzinfo=LOCAL_TZ)).isoformat(timespec="minutes")
     _save_state(state)
     print(f"not_before = {state['not_before']}")
+
+
+def cmd_set_priority(args) -> None:
+    state = _load_state()
+    if args.labels == ["none"]:
+        state["priority"] = []
+    else:
+        known = set(_queue())
+        missing = [l for l in args.labels if l not in known]
+        if missing:
+            raise SystemExit(f"output/ 找不到這些菜名：{missing}")
+        state["priority"] = args.labels
+    _save_state(state)
+    print(f"priority = {state['priority']}")
+
+
+def cmd_schedule(args) -> None:
+    """推算接下來每一篇的預計發文日（假設每次都準時發出）。"""
+    state = _load_state()
+    pending = [l for l in _ordered_queue(state) if l not in state["posted"]]
+    due = _next_due(state) or datetime.combine(_now().date(), POST_TIME, LOCAL_TZ)
+    if due < _now():
+        due = datetime.combine(_now().date(), POST_TIME, LOCAL_TZ)
+        if due < _now():
+            due += timedelta(days=1)
+    interval = timedelta(days=int(os.environ.get("POST_INTERVAL_DAYS", "5")))
+    for i, label in enumerate(pending[: args.limit]):
+        print(f"{(due + interval * i):%Y-%m-%d %a %H:%M %Z}  {label}")
+    if len(pending) > args.limit:
+        print(f"...（共 {len(pending)} 張）")
 
 
 def main() -> None:
@@ -246,8 +293,14 @@ def main() -> None:
     p.add_argument("labels", nargs="+")
     p.set_defaults(func=cmd_unmark)
     p = sub.add_parser("set-not-before")
-    p.add_argument("when", help='例如 "2026-10-25T19:00"（台灣時間），或 none')
+    p.add_argument("when", help='例如 "2026-10-25T19:00"（POST_TIMEZONE 的當地時間），或 none')
     p.set_defaults(func=cmd_set_not_before)
+    p = sub.add_parser("set-priority")
+    p.add_argument("labels", nargs="+")
+    p.set_defaults(func=cmd_set_priority)
+    p = sub.add_parser("schedule")
+    p.add_argument("--limit", type=int, default=10)
+    p.set_defaults(func=cmd_schedule)
     args = parser.parse_args()
     args.func(args)
 

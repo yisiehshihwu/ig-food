@@ -34,7 +34,7 @@
 - 裁切與濾鏡邏輯共用同一個 `process()` 函式，確保 preview 看到的畫面跟最終輸出完全一致。
 - 濾鏡參數（對比/飽和度/暖色調/暗角/銳化/顆粒感）以常數形式寫在 `process_photo.py` 開頭，參考一般食物攝影 IG 帳號常見做法：飽和度其實是略降而非推高、對比與清晰度放輕、暖色調幅度很小，走真實自然路線而非厚重濾鏡。
 - 裁切邏輯預設一律輸出橫向 4:3（`--orientation` 預設是 `landscape`），直幅原圖也會被裁成橫幅；原圖已經是橫幅 4:3 時通常只需要裁掉一點點多餘的邊。只有使用者明確要求 `--zoom > 1` 時才會額外裁緊、放大主體。
-- **IG Crema 濾鏡（100%）**：使用者要求發文時套 IG 的 Crema 濾鏡，但發文 API 不能套 app 內建濾鏡，所以 `apply_style()` 最後一步用 `apply_crema()` 自己做。參數（`CREMA_SATURATION`、`CREMA_CURVES`）是拿同一張照片的原圖與 IG 網頁版套 Crema 100% 的截圖逐像素擬合出來的，不是目測；強度 `CREMA_STRENGTH = 1.0` 是使用者選定的。2026-10-16 已對佇列中 31 張成品補套 Crema（套用前的版本備份在 `.cache/output_backup_before_crema/`）；已經發出去的 三杯雞、紅燒牛肉麵、乾炒牛河 維持原樣。**`output/` 裡的成品都已經含 Crema，不要再對它們套一次**，新照片走 `process()` 會自動套到。
+- **IG Crema 濾鏡（100%）**：使用者要求發文時套 IG 的 Crema 濾鏡，但發文 API 不能套 app 內建濾鏡，所以 `apply_style()` 最後一步用 `apply_crema()` 自己做。參數（`CREMA_SATURATION`、`CREMA_CURVES`）是拿同一張照片的原圖與 IG 網頁版套 Crema 100% 的截圖逐像素擬合出來的，不是目測；強度 `CREMA_STRENGTH = 1.0` 是使用者選定的。2026-10-16 已對 `output/` 全部 34 張成品補套 Crema（套用前的版本備份在 `.cache/output_backup_before_crema/`）。**`output/` 裡的成品都已經含 Crema，不要再對它們套一次**，新照片走 `process()` 會自動套到。
 - 以上都是固定參數/邏輯，所有照片套用完全相同的值，才能保證 IG 版面風格一致，不是每張個別調整。
 
 ## 自動預覽：scripts/auto_preview.py
@@ -45,9 +45,9 @@
 
 ## 自動發 IG：scripts/publish_ig.py + GitHub Actions
 
-- 使用者要求**完全自動發文**（發出前不再經過人工確認）：GitHub Actions（`.github/workflows/ig-publish.yml`）每天台灣時間 19:00 跑一次 `publish_ig.py publish`，距離上次 API 發文滿 5 天才真的發一篇；貼文文字**只有菜名**（撞名用的尾數字會去掉）。
+- 使用者要求**完全自動發文**（發出前不再經過人工確認）：GitHub Actions（`.github/workflows/ig-publish.yml`）每天跑 `publish_ig.py publish`，每 5 天在**美東時間 19:00**（使用者在美東；`America/New_York`，自動處理夏令/冬令時間）發一篇；貼文文字**只有菜名**（撞名用的尾數字會去掉）。
 - 發文順序 = `manifest.json` 的定案順序，新 finalize 的照片自動排到最後。進度記在 `output/publish_state.json`，Actions 發完會自己 commit 回 repo。
-- 使用者在 Business Suite 手動發過/排過的，用 `mark-posted <菜名>` 標記，避免重發；`set-not-before` 可設定最早自動發文時間，避開已排好的貼文。
+- 使用者 2026-10-16 起**不再用 Meta Business Suite 排程，發文全部交給這套自動流程**。`set-priority` 可指定插隊優先發的菜名；`schedule` 列出接下來的預計發文日；在別處手動發過的用 `mark-posted <菜名>` 標記避免重發；`set-not-before` 設定最早自動發文時間。
 - 用的是 Instagram 官方 Content Publishing API，它要從公開網址抓圖，所以這個 repo 是**公開的** GitHub repo，圖片透過 GitHub Pages 提供（`IMAGE_BASE_URL`）。`input/`、`.cache/`、`.venv/` 不進版控（見 `.gitignore`）。token 放在 GitHub Secrets（`IG_USER_ID`、`IG_ACCESS_TOKEN`），不能寫進任何檔案。
 - **finalize 之後要 commit + push `output/`**，新成品才會進到雲端的發文佇列。
 
