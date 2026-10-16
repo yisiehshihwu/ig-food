@@ -149,9 +149,8 @@ def _check_image_url(url: str) -> None:
 
 
 def _secret(name: str) -> str:
-    # 貼進 GitHub Secrets 時很容易多帶到結尾換行（第一次上線就是 IG_USER_ID 多了 
- 而失敗），
-    # 一律去掉前後空白
+    # 貼進 GitHub Secrets 時很容易多帶到結尾換行（第一次上線就是 IG_USER_ID 結尾多了
+    # 換行而失敗），一律去掉前後空白
     value = os.environ.get(name, "").strip()
     if not value:
         raise SystemExit(f"GitHub Secrets 裡沒有設定 {name}")
