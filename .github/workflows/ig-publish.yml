@@ -7,6 +7,10 @@ on:
     - cron: "0 11 * * *" # UTC 11:00 = 台灣 19:00；GitHub 排程可能延遲幾十分鐘
   workflow_dispatch:
     inputs:
+      check_only:
+        description: "只檢查設定是否正常，不發文"
+        type: boolean
+        default: true
       force:
         description: "忽略 5 天間隔，立刻發下一篇"
         type: boolean
@@ -29,7 +33,16 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Check setup only (no posting)
+        if: inputs.check_only
+        env:
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IMAGE_BASE_URL: ${{ vars.IMAGE_BASE_URL }}
+        run: python scripts/publish_ig.py check
+
       - name: Publish next post if due
+        if: ${{ !inputs.check_only }}
         env:
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}

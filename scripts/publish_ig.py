@@ -17,6 +17,7 @@ API 會自己去抓 image_url，所以圖片必須放在公開網址（IMAGE_BAS
 
 子命令：
     next                        印出下一篇會發哪張、什麼時候發（不需要 token）
+    check                       不發文，只檢查 token、發文權限、圖片網址是否正常
     publish [--force]           到時間就發一篇；--force 忽略間隔立即發
     mark-posted <菜名>...       把手動發過/排過的菜名標記成已發
     unmark <菜名>...            取消標記
@@ -180,6 +181,25 @@ def cmd_publish(args) -> None:
     print(f"已發布：{label}（media_id={media_id}）")
 
 
+def cmd_check(_args) -> None:
+    """不發文，只確認 token、IG 帳號、發文權限、下一張圖的網址都正常。"""
+    user_id = os.environ["IG_USER_ID"]
+    token = os.environ["IG_ACCESS_TOKEN"]
+    account = _graph("GET", user_id, {"fields": "username", "access_token": token})
+    print(f"token 有效，IG 帳號：@{account.get('username')}")
+    # 這個端點需要 instagram_content_publish 權限，順便確認發文權限有給到
+    limit = _graph("GET", f"{user_id}/content_publishing_limit", {"fields": "quota_usage,config", "access_token": token})
+    print(f"發文權限正常，過去 24 小時已用額度：{limit.get('data', [{}])[0].get('quota_usage')}")
+    state = _load_state()
+    label = _next_label(state)
+    if label:
+        url = f"{os.environ['IMAGE_BASE_URL'].rstrip('/')}/{urllib.parse.quote(label)}.jpg"
+        _check_image_url(url)
+        print(f"下一張圖片網址正常：{label} -> {url}")
+    cmd_next(_args)
+    print("檢查完成，全部正常（這次沒有發文）。")
+
+
 def cmd_mark_posted(args) -> None:
     state = _load_state()
     known = set(_queue())
@@ -215,6 +235,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("next").set_defaults(func=cmd_next)
+    sub.add_parser("check").set_defaults(func=cmd_check)
     p = sub.add_parser("publish")
     p.add_argument("--force", action="store_true", help="忽略發文間隔，立即發下一篇")
     p.set_defaults(func=cmd_publish)
