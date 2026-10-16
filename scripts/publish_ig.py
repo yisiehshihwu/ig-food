@@ -1,0 +1,235 @@
+"""自動發 IG：每次執行最多發一篇，從 output/ 依序挑還沒發過的成品圖，貼文文字只放菜名。
+
+設計成在 GitHub Actions 上每天跑一次（.github/workflows/ig-publish.yml），由這支腳本
+自己判斷「距離上次發文滿 POST_INTERVAL_DAYS 天了沒」，沒滿就什麼都不做——GitHub 的
+cron 沒辦法直接表達「每 5 天」，所以間隔由這裡控制。只用標準函式庫，Actions 上不用裝套件。
+
+發文用 Instagram 官方 Content Publishing API（graph.facebook.com）：
+    1) POST /{ig-user-id}/media         image_url + caption -> 建立 container
+    2) GET  /{container-id}?fields=status_code，等到 FINISHED
+    3) POST /{ig-user-id}/media_publish creation_id -> 正式發出
+API 會自己去抓 image_url，所以圖片必須放在公開網址（IMAGE_BASE_URL，例如 GitHub Pages）。
+
+發文進度記在 output/publish_state.json：
+    {"posted": {"三杯雞": {"posted_at": "...", "media_id": "...", "source": "api"}}, "not_before": null}
+- source 為 "manual" 代表是使用者自己在 Business Suite 發/排的，只是標記起來避免重複發。
+- not_before（ISO 時間）可選：在這個時間之前不自動發，用來避開 Business Suite 已經排好的貼文。
+
+子命令：
+    next                        印出下一篇會發哪張、什麼時候發（不需要 token）
+    publish [--force]           到時間就發一篇；--force 忽略間隔立即發
+    mark-posted <菜名>...       把手動發過/排過的菜名標記成已發
+    unmark <菜名>...            取消標記
+    set-not-before <ISO時間>    設定最早自動發文時間（"none" 取消）
+
+環境變數（publish 需要）：
+    IG_USER_ID          Instagram 商業帳號的 ID
+    IG_ACCESS_TOKEN     有 instagram_content_publish 權限的 token（建議用不會過期的系統使用者 token）
+    IMAGE_BASE_URL      output/ 圖片的公開網址前綴，例如 https://<帳號>.github.io/<repo>/output
+    GRAPH_API_VERSION   預設 v26.0
+    POST_INTERVAL_DAYS  預設 5
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+OUTPUT_DIR = PROJECT_ROOT / "output"
+MANIFEST_PATH = OUTPUT_DIR / "manifest.json"
+STATE_PATH = OUTPUT_DIR / "publish_state.json"
+
+TAIPEI = timezone(timedelta(hours=8))
+# GitHub cron 常延遲幾十分鐘，留半天緩衝，避免「差 10 分鐘滿 5 天」就整整晚一天
+INTERVAL_SLACK = timedelta(hours=12)
+
+
+def _now() -> datetime:
+    return datetime.now(TAIPEI)
+
+
+def _load_json(path: Path, default):
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
+
+
+def _load_state() -> dict:
+    state = _load_json(STATE_PATH, {})
+    state.setdefault("posted", {})
+    state.setdefault("not_before", None)
+    return state
+
+
+def _save_state(state: dict) -> None:
+    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _queue() -> list[str]:
+    """發文順序 = manifest 裡的定案順序（新照片 finalize 後自然排在最後），去重、只留檔案存在的。"""
+    seen, labels = set(), []
+    for label in _load_json(MANIFEST_PATH, {}).values():
+        if label not in seen and (OUTPUT_DIR / f"{label}.jpg").exists():
+            seen.add(label)
+            labels.append(label)
+    return labels
+
+
+def _caption(label: str) -> str:
+    # 撞名時檔名會是「紅燒排骨2」，貼文文字不要帶那個數字
+    return re.sub(r"\d+$", "", label).strip() or label
+
+
+def _next_label(state: dict) -> str | None:
+    return next((l for l in _queue() if l not in state["posted"]), None)
+
+
+def _next_due(state: dict) -> datetime | None:
+    interval = timedelta(days=float(os.environ.get("POST_INTERVAL_DAYS", "5")))
+    api_times = [
+        datetime.fromisoformat(v["posted_at"])
+        for v in state["posted"].values()
+        if v.get("source") == "api" and v.get("posted_at")
+    ]
+    candidates = []
+    if api_times:
+        candidates.append(max(api_times) + interval - INTERVAL_SLACK)
+    if state["not_before"]:
+        candidates.append(datetime.fromisoformat(state["not_before"]))
+    return max(candidates) if candidates else None
+
+
+def _graph(method: str, path: str, params: dict) -> dict:
+    version = os.environ.get("GRAPH_API_VERSION", "v26.0")
+    url = f"https://graph.facebook.com/{version}/{path}"
+    data = urllib.parse.urlencode(params).encode()
+    if method == "GET":
+        req = urllib.request.Request(f"{url}?{data.decode()}")
+    else:
+        req = urllib.request.Request(url, data=data, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f"Graph API 錯誤 {e.code}（{path}）：{e.read().decode(errors='replace')}")
+
+
+def _check_image_url(url: str) -> None:
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=30) as resp:
+            ctype = resp.headers.get("Content-Type", "")
+    except urllib.error.URLError as e:
+        raise SystemExit(f"圖片網址打不開，IG 也會抓不到：{url}（{e}）")
+    if "image/jpeg" not in ctype:
+        raise SystemExit(f"圖片網址的 Content-Type 是 {ctype!r} 不是 image/jpeg，IG 可能會拒收：{url}")
+
+
+def _publish_one(label: str) -> str:
+    user_id = os.environ["IG_USER_ID"]
+    token = os.environ["IG_ACCESS_TOKEN"]
+    base = os.environ["IMAGE_BASE_URL"].rstrip("/")
+    image_url = f"{base}/{urllib.parse.quote(label)}.jpg"
+    _check_image_url(image_url)
+
+    container = _graph("POST", f"{user_id}/media", {
+        "image_url": image_url, "caption": _caption(label), "access_token": token,
+    })["id"]
+    for _ in range(30):
+        status = _graph("GET", container, {"fields": "status_code", "access_token": token}).get("status_code")
+        if status == "FINISHED":
+            break
+        if status in ("ERROR", "EXPIRED"):
+            raise SystemExit(f"IG 處理圖片失敗（status={status}）：{label}")
+        time.sleep(5)
+    else:
+        raise SystemExit(f"等 IG 處理圖片逾時：{label}")
+    return _graph("POST", f"{user_id}/media_publish", {"creation_id": container, "access_token": token})["id"]
+
+
+def cmd_next(_args) -> None:
+    state = _load_state()
+    label = _next_label(state)
+    remaining = sum(1 for l in _queue() if l not in state["posted"])
+    if not label:
+        print("佇列是空的：output/ 的成品都發過了。")
+        return
+    due = _next_due(state)
+    when = "下一次排程執行時就會發" if not due or due <= _now() else f"{due:%Y-%m-%d %H:%M} 之後的第一次排程執行"
+    print(f"下一篇：{label}（貼文文字：{_caption(label)}）\n時間：{when}\n佇列剩 {remaining} 張")
+
+
+def cmd_publish(args) -> None:
+    state = _load_state()
+    label = _next_label(state)
+    if not label:
+        print("佇列是空的，沒有可以發的。")
+        return
+    due = _next_due(state)
+    if not args.force and due and _now() < due:
+        print(f"還沒到發文時間（{due:%Y-%m-%d %H:%M} 之後），這次不發。")
+        return
+    media_id = _publish_one(label)
+    state["posted"][label] = {"posted_at": _now().isoformat(timespec="seconds"), "media_id": media_id, "source": "api"}
+    _save_state(state)
+    print(f"已發布：{label}（media_id={media_id}）")
+
+
+def cmd_mark_posted(args) -> None:
+    state = _load_state()
+    known = set(_queue())
+    for label in args.labels:
+        if label not in known:
+            raise SystemExit(f"output/ 找不到這個菜名：{label}")
+        state["posted"].setdefault(label, {"source": "manual"})
+    _save_state(state)
+    print(f"已標記 {len(args.labels)} 張為已發。")
+
+
+def cmd_unmark(args) -> None:
+    state = _load_state()
+    for label in args.labels:
+        state["posted"].pop(label, None)
+    _save_state(state)
+
+
+def cmd_set_not_before(args) -> None:
+    state = _load_state()
+    if args.when.lower() == "none":
+        state["not_before"] = None
+    else:
+        when = datetime.fromisoformat(args.when)
+        state["not_before"] = (when if when.tzinfo else when.replace(tzinfo=TAIPEI)).isoformat(timespec="minutes")
+    _save_state(state)
+    print(f"not_before = {state['not_before']}")
+
+
+def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("next").set_defaults(func=cmd_next)
+    p = sub.add_parser("publish")
+    p.add_argument("--force", action="store_true", help="忽略發文間隔，立即發下一篇")
+    p.set_defaults(func=cmd_publish)
+    p = sub.add_parser("mark-posted")
+    p.add_argument("labels", nargs="+")
+    p.set_defaults(func=cmd_mark_posted)
+    p = sub.add_parser("unmark")
+    p.add_argument("labels", nargs="+")
+    p.set_defaults(func=cmd_unmark)
+    p = sub.add_parser("set-not-before")
+    p.add_argument("when", help='例如 "2026-10-25T19:00"（台灣時間），或 none')
+    p.set_defaults(func=cmd_set_not_before)
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

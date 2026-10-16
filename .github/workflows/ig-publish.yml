@@ -1,0 +1,50 @@
+# 每天台灣時間 19:00 檢查一次，距離上次發文滿 5 天（POST_INTERVAL_DAYS）才真的發一篇。
+# 間隔判斷在 scripts/publish_ig.py 裡，這裡只負責每天叫它起來。
+name: IG auto publish
+
+on:
+  schedule:
+    - cron: "0 11 * * *" # UTC 11:00 = 台灣 19:00；GitHub 排程可能延遲幾十分鐘
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "忽略 5 天間隔，立刻發下一篇"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ig-publish # 同時只跑一個，避免同一張被發兩次
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Publish next post if due
+        env:
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IMAGE_BASE_URL: ${{ vars.IMAGE_BASE_URL }}
+          POST_INTERVAL_DAYS: ${{ vars.POST_INTERVAL_DAYS || '5' }}
+        run: python scripts/publish_ig.py publish ${{ inputs.force && '--force' || '' }}
+
+      # 把發文紀錄寫回 repo，下次才知道發到哪、上次是哪天；這個 commit 也讓 repo 保持活躍，
+      # 避免 GitHub 對 60 天沒動靜的 repo 自動停用排程
+      - name: Save publish state
+        run: |
+          if ! git diff --quiet -- output/publish_state.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898314+github-actions[bot]@users.noreply.github.com"
+            git add output/publish_state.json
+            git commit -m "Record IG post"
+            git push
+          fi

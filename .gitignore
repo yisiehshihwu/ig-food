@@ -1,0 +1,7 @@
+# repo 是公開的（IG API 要從公開網址抓圖），只放成品圖、腳本與設定
+input/
+.cache/
+.venv/
+__pycache__/
+.claude/settings.local.json
+.env
