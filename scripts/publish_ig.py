@@ -148,11 +148,23 @@ def _check_image_url(url: str) -> None:
         raise SystemExit(f"圖片網址的 Content-Type 是 {ctype!r} 不是 image/jpeg，IG 可能會拒收：{url}")
 
 
+def _image_url(label: str) -> str:
+    """成品圖在 GitHub Pages 上的公開網址。IMAGE_BASE_URL 沒設定就從 GITHUB_REPOSITORY
+    （Actions 自帶，例如 yisiehshihwu/ig-food）推算；有設定但漏了結尾的 /output 也自動補上——
+    第一次上線就因為少了 /output 而 404。"""
+    base = os.environ.get("IMAGE_BASE_URL", "").strip().rstrip("/")
+    if not base:
+        owner, repo = os.environ["GITHUB_REPOSITORY"].split("/")
+        base = f"https://{owner}.github.io/{repo}"
+    if not base.endswith("/output"):
+        base += "/output"
+    return f"{base}/{urllib.parse.quote(label)}.jpg"
+
+
 def _publish_one(label: str) -> str:
     user_id = os.environ["IG_USER_ID"]
     token = os.environ["IG_ACCESS_TOKEN"]
-    base = os.environ["IMAGE_BASE_URL"].rstrip("/")
-    image_url = f"{base}/{urllib.parse.quote(label)}.jpg"
+    image_url = _image_url(label)
     _check_image_url(image_url)
 
     container = _graph("POST", f"{user_id}/media", {
@@ -210,7 +222,7 @@ def cmd_check(_args) -> None:
     state = _load_state()
     label = _next_label(state)
     if label:
-        url = f"{os.environ['IMAGE_BASE_URL'].rstrip('/')}/{urllib.parse.quote(label)}.jpg"
+        url = _image_url(label)
         _check_image_url(url)
         print(f"下一張圖片網址正常：{label} -> {url}")
     cmd_next(_args)
