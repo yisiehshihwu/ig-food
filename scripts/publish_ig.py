@@ -148,6 +148,16 @@ def _check_image_url(url: str) -> None:
         raise SystemExit(f"圖片網址的 Content-Type 是 {ctype!r} 不是 image/jpeg，IG 可能會拒收：{url}")
 
 
+def _secret(name: str) -> str:
+    # 貼進 GitHub Secrets 時很容易多帶到結尾換行（第一次上線就是 IG_USER_ID 多了 
+ 而失敗），
+    # 一律去掉前後空白
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise SystemExit(f"GitHub Secrets 裡沒有設定 {name}")
+    return value
+
+
 def _image_url(label: str) -> str:
     """成品圖在 GitHub Pages 上的公開網址。IMAGE_BASE_URL 沒設定就從 GITHUB_REPOSITORY
     （Actions 自帶，例如 yisiehshihwu/ig-food）推算；有設定但漏了結尾的 /output 也自動補上——
@@ -162,8 +172,8 @@ def _image_url(label: str) -> str:
 
 
 def _publish_one(label: str) -> str:
-    user_id = os.environ["IG_USER_ID"]
-    token = os.environ["IG_ACCESS_TOKEN"]
+    user_id = _secret("IG_USER_ID")
+    token = _secret("IG_ACCESS_TOKEN")
     image_url = _image_url(label)
     _check_image_url(image_url)
 
@@ -212,8 +222,8 @@ def cmd_publish(args) -> None:
 
 def cmd_check(_args) -> None:
     """不發文，只確認 token、IG 帳號、發文權限、下一張圖的網址都正常。"""
-    user_id = os.environ["IG_USER_ID"]
-    token = os.environ["IG_ACCESS_TOKEN"]
+    user_id = _secret("IG_USER_ID")
+    token = _secret("IG_ACCESS_TOKEN")
     account = _graph("GET", user_id, {"fields": "username", "access_token": token})
     print(f"token 有效，IG 帳號：@{account.get('username')}")
     # 這個端點需要 instagram_content_publish 權限，順便確認發文權限有給到
