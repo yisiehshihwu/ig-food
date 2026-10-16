@@ -355,7 +355,9 @@ def apply_style(
     if GRAIN_STRENGTH:
         image = _add_grain(image, GRAIN_STRENGTH)
 
-    return image
+    # 最後再疊 IG 的 Crema 濾鏡，等同「成品上傳 IG 時套 Crema」——自動發文的 API 不能套
+    # app 內建濾鏡，所以在這裡先做好
+    return apply_crema(image, CREMA_STRENGTH)
 
 
 def _lift_shadows(image: Image.Image, lift: int, compress: float) -> Image.Image:
@@ -384,6 +386,35 @@ def _apply_vignette(image: Image.Image, strength: float) -> Image.Image:
 
     black = Image.new("RGB", image.size, (0, 0, 0))
     return Image.composite(black, image, Image.fromarray(mask, mode="L"))
+
+
+# Instagram Crema 濾鏡的近似參數。不是目測猜的：是拿同一張照片（宮保雞丁）在 IG 網頁版
+# 套 Crema 100% 的截圖，跟原圖逐像素對齊後擬合出來的（平均誤差約 4/255）。模型刻意只用
+# 「降飽和 + 每個色版一條色調曲線」，不用自由的 3x3 色彩矩陣——那張照片幾乎只有褐色系，
+# 自由矩陣會擬合出極端的交叉係數，套到有綠色蔬菜、藍色盤子的照片就會偏色。
+CREMA_STRENGTH = 1.0  # 使用者選定 100%（2026-10-16），所有照片一律套用
+CREMA_SATURATION = 0.76
+CREMA_CURVES = (  # R、G、B 三條曲線，各 17 個控制點，對應輸入 0, 1/16, ..., 1
+    (0.026, 0.076, 0.125, 0.181, 0.250, 0.326, 0.406, 0.486, 0.560, 0.627, 0.691, 0.762, 0.821, 0.860, 0.895, 0.920, 0.948),
+    (0.025, 0.074, 0.125, 0.186, 0.253, 0.321, 0.386, 0.448, 0.511, 0.576, 0.643, 0.719, 0.795, 0.834, 0.881, 0.919, 0.957),
+    (0.055, 0.114, 0.173, 0.225, 0.262, 0.297, 0.335, 0.390, 0.459, 0.533, 0.605, 0.672, 0.734, 0.780, 0.824, 0.860, 0.882),
+)
+
+
+def apply_crema(image: Image.Image, strength: float = 1.0) -> Image.Image:
+    """模擬 Instagram 的 Crema 濾鏡（IG 的發文 API 不能套 app 內建濾鏡，只能自己做）。
+    strength 對應 IG app 裡的濾鏡強度滑桿，0~1。"""
+    if strength <= 0:
+        return image
+    src = np.asarray(image).astype("float32") / 255.0
+    lum = (src @ np.array([0.299, 0.587, 0.114], dtype="float32"))[..., None]
+    desat = lum + (src - lum) * CREMA_SATURATION
+
+    xs = np.linspace(0, 1, len(CREMA_CURVES[0]))
+    out = np.stack([np.interp(desat[..., c], xs, CREMA_CURVES[c]) for c in range(3)], axis=-1)
+
+    blended = src + (out - src) * strength
+    return Image.fromarray((np.clip(blended, 0, 1) * 255 + 0.5).astype("uint8"), mode="RGB")
 
 
 def _resize_to_output(image: Image.Image) -> Image.Image:
