@@ -33,7 +33,7 @@ API 會自己去抓 image_url，所以圖片必須放在公開網址（IMAGE_BAS
     IG_ACCESS_TOKEN     有 instagram_content_publish 權限的 token（建議用不會過期的系統使用者 token）
     IMAGE_BASE_URL      output/ 圖片的公開網址前綴，例如 https://<帳號>.github.io/<repo>/output
     GRAPH_API_VERSION   預設 v26.0
-    POST_INTERVAL_DAYS  預設 5
+    POST_INTERVAL_DAYS  預設 3
     POST_TIME           預設 19:00（當地時間）
     POST_TIMEZONE       預設 America/New_York（使用者在美東，會自動處理夏令/冬令時間）
 """
@@ -108,7 +108,7 @@ def _next_label(state: dict) -> str | None:
 def _next_due(state: dict) -> datetime | None:
     """下次發文時間 = 上次 API 發文那天 + 間隔天數的當地 POST_TIME；用「日期」算而不是精確
     相隔幾小時，這樣 GitHub cron 延遲幾十分鐘也不會讓下一篇整整晚一天。"""
-    interval = int(os.environ.get("POST_INTERVAL_DAYS", "5"))
+    interval = int(os.environ.get("POST_INTERVAL_DAYS", "3"))
     api_times = [
         datetime.fromisoformat(v["posted_at"]).astimezone(LOCAL_TZ)
         for v in state["posted"].values()
@@ -290,7 +290,7 @@ def cmd_schedule(args) -> None:
         due = datetime.combine(_now().date(), POST_TIME, LOCAL_TZ)
         if due < _now():
             due += timedelta(days=1)
-    interval = timedelta(days=int(os.environ.get("POST_INTERVAL_DAYS", "5")))
+    interval = timedelta(days=int(os.environ.get("POST_INTERVAL_DAYS", "3")))
     for i, label in enumerate(pending[: args.limit]):
         print(f"{(due + interval * i):%Y-%m-%d %a %H:%M %Z}  {label}")
     if len(pending) > args.limit:

@@ -1,4 +1,4 @@
-# 每 5 天（POST_INTERVAL_DAYS）的美東時間 19:00 發一篇。發文時間的判斷在
+# 每 3 天（POST_INTERVAL_DAYS）的美東時間 19:00 發一篇。發文時間的判斷在
 # scripts/publish_ig.py 裡（用 America/New_York 時區，會自動處理夏令/冬令時間），
 # 這裡只負責叫它起來。
 name: IG auto publish
@@ -17,7 +17,7 @@ on:
         type: boolean
         default: true
       force:
-        description: "忽略 5 天間隔，立刻發下一篇"
+        description: "忽略發文間隔，立刻發下一篇"
         type: boolean
         default: false
 
@@ -52,7 +52,7 @@ jobs:
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IMAGE_BASE_URL: ${{ vars.IMAGE_BASE_URL }}
-          POST_INTERVAL_DAYS: ${{ vars.POST_INTERVAL_DAYS || '5' }}
+          POST_INTERVAL_DAYS: ${{ vars.POST_INTERVAL_DAYS || '3' }}
         run: python scripts/publish_ig.py publish ${{ inputs.force && '--force' || '' }}
 
       # 把發文紀錄寫回 repo，下次才知道發到哪、上次是哪天；這個 commit 也讓 repo 保持活躍，

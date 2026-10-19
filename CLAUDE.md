@@ -45,7 +45,7 @@
 
 ## 自動發 IG：scripts/publish_ig.py + GitHub Actions
 
-- 使用者要求**完全自動發文**（發出前不再經過人工確認）：GitHub Actions（`.github/workflows/ig-publish.yml`）每天跑 `publish_ig.py publish`，每 5 天在**美東時間 19:00**（使用者在美東；`America/New_York`，自動處理夏令/冬令時間）發一篇；貼文文字**只有菜名**（撞名用的尾數字會去掉）。
+- 使用者要求**完全自動發文**（發出前不再經過人工確認）：GitHub Actions（`.github/workflows/ig-publish.yml`）每天跑 `publish_ig.py publish`，每 3 天在**美東時間 19:00**（使用者在美東；`America/New_York`，自動處理夏令/冬令時間）發一篇；貼文文字**只有菜名**（撞名用的尾數字會去掉）。
 - 發文順序 = `manifest.json` 的定案順序，新 finalize 的照片自動排到最後。進度記在 `output/publish_state.json`，Actions 發完會自己 commit 回 repo。
 - 使用者 2026-10-16 起**不再用 Meta Business Suite 排程，發文全部交給這套自動流程**。`set-priority` 可指定插隊優先發的菜名；`schedule` 列出接下來的預計發文日；在別處手動發過的用 `mark-posted <菜名>` 標記避免重發；`set-not-before` 設定最早自動發文時間。
 - 用的是 Instagram 官方 Content Publishing API，它要從公開網址抓圖，所以這個 repo 是**公開的** GitHub repo，圖片透過 GitHub Pages 提供（`IMAGE_BASE_URL`）。`input/`、`.cache/`、`.venv/` 不進版控（見 `.gitignore`）。token 放在 GitHub Secrets（`IG_USER_ID`、`IG_ACCESS_TOKEN`），不能寫進任何檔案。
