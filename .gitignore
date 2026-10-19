@@ -6,3 +6,4 @@ __pycache__/
 .claude/settings.local.json
 .env
 input_import_dir.txt
+input_imported.txt
