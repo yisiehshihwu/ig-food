@@ -522,12 +522,62 @@ def cmd_finalize(args: argparse.Namespace) -> None:
     print(json.dumps({"output_path": str(output_path)}, ensure_ascii=False, indent=2))
 
 
+def cmd_discard(args: argparse.Namespace) -> None:
+    """使用者說「不用這張」時的完整清除：input/ 的照片、預覽圖、Google Drive「IG照片」裡的
+    原檔（使用者要求一起刪；Drive 桌面版刪除會進雲端垃圾桶，30 天內可救回），以及已定案
+    但還沒發的成品與佇列紀錄。已經發到 IG 的不處理，IG 上的貼文要使用者自己在 app 刪。"""
+    from cloud_import import import_dir
+
+    publish_state_path = OUTPUT_DIR / "publish_state.json"
+    target = Path(args.input_name)
+    matches = [p for p in INPUT_DIR.iterdir() if p.is_file() and target.name in (p.name, p.stem)]
+    stem = matches[0].stem if matches else target.stem
+    manifest = _load_manifest()
+    label = manifest.get(stem)
+    state = json.loads(publish_state_path.read_text(encoding="utf-8")) if publish_state_path.exists() else {}
+    if label and label in state.get("posted", {}):
+        raise SystemExit(f"「{label}」已經發到 IG 了：這裡不刪成品紀錄，IG 上的貼文請在 app 裡刪除。")
+
+    removed = []
+
+    def _remove(path: Path) -> None:
+        if path.exists():
+            path.unlink()
+            removed.append(str(path))
+
+    for p in matches:
+        _remove(p)
+    for p in list(PREVIEW_DIR.glob("*")) if PREVIEW_DIR.exists() else []:
+        if p.stem in (stem, f"_sheet_{stem}", f"_compare_{stem}"):
+            _remove(p)
+    cloud = import_dir()
+    if cloud and cloud.is_dir():
+        for p in cloud.iterdir():
+            if p.is_file() and p.stem == stem:
+                _remove(p)
+    if label:  # 已定案、還沒發：從佇列拿掉
+        _remove(OUTPUT_DIR / f"{label}.jpg")
+        del manifest[stem]
+        _save_manifest(manifest)
+        if label in state.get("priority", []):
+            state["priority"].remove(label)
+            publish_state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        removed.append(f"manifest 紀錄：{stem} -> {label}")
+    if not removed:
+        raise SystemExit(f"找不到跟「{args.input_name}」有關的檔案。")
+    print(json.dumps({"removed": removed, "was_queued": bool(label)}, ensure_ascii=False, indent=2))
+
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="IG 食譜照片批次裁切與濾鏡工具")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("list-new", help="列出還沒處理過的新照片").set_defaults(func=cmd_list_new)
+
+    discard_sub = subparsers.add_parser("discard", help="使用者不要這張照片：連同雲端原檔、預覽、未發的成品一起刪")
+    discard_sub.add_argument("input_name", help="input/ 裡的檔名或不含副檔名的名稱")
+    discard_sub.set_defaults(func=cmd_discard)
 
     auto_sub = subparsers.add_parser(
         "auto-detect", help="自動偵測一張照片的主體，算出建議的 offset-x/offset-y/zoom/rotate"
