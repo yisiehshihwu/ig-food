@@ -90,6 +90,10 @@ def main() -> None:
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8")) if MANIFEST_PATH.exists() else {}
     _clear_finalized_previews(manifest)
 
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from cloud_import import import_new_photos
+
+    import_new_photos()  # 手機傳到 Google Drive 的新照片先拉進 input/
     pending = _pending_inputs(manifest)
     if not pending:
         return

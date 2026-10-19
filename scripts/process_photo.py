@@ -451,6 +451,10 @@ def process(
 
 
 def cmd_list_new(_args: argparse.Namespace) -> None:
+    from cloud_import import import_new_photos
+
+    for p in import_new_photos():  # 先把手機傳到 Google Drive 的新照片拉進 input/
+        print(f"從雲端資料夾匯入：{p.name}", file=sys.stderr)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     manifest = _load_manifest()
     processed_stems = set(manifest.keys())
