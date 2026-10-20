@@ -50,6 +50,7 @@
 - 發文順序 = `manifest.json` 的定案順序，新 finalize 的照片自動排到最後。進度記在 `output/publish_state.json`，Actions 發完會自己 commit 回 repo。
 - 使用者 2026-10-16 起**不再用 Meta Business Suite 排程，發文全部交給這套自動流程**。`set-priority` 可指定插隊優先發的菜名；`schedule` 列出接下來的預計發文日；在別處手動發過的用 `mark-posted <菜名>` 標記避免重發；`set-not-before` 設定最早自動發文時間。
 - 用的是 Instagram 官方 Content Publishing API，它要從公開網址抓圖，所以這個 repo 是**公開的** GitHub repo，圖片透過 GitHub Pages 提供（`IMAGE_BASE_URL`）。`input/`、`.cache/`、`.venv/` 不進版控（見 `.gitignore`）。token 放在 GitHub Secrets（`IG_USER_ID`、`IG_ACCESS_TOKEN`），不能寫進任何檔案。
+- 使用者說「馬上發一篇」時，跑 `bash scripts/trigger_publish.sh`：用 git 存的 GitHub 憑證觸發 workflow 的 `force` 模式，立刻發下一篇（加 `--check` 只檢查設定不發文）。這台電腦沒有 `gh` CLI。
 - **finalize 之後要 commit + push `output/`**，新成品才會進到雲端的發文佇列。
 
 ## 工作慣例（軟規則）
