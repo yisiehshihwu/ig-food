@@ -38,6 +38,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      # publish_ig.py 用 zoneinfo 算美東時間，需要 IANA 時區資料。2026-10-19 runner 換成
+      # Ubuntu 26 當天發文就失敗，不能假設系統一定有附，自己裝 tzdata 套件比較保險
+      - name: Install time zone data
+        run: python -m pip install --quiet tzdata
+
       - name: Check setup only (no posting)
         if: inputs.check_only
         env:
