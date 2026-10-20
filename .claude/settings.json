@@ -7,7 +7,8 @@
       "Write",
       "Edit",
       "Bash",
-      "PowerShell"
+      "PowerShell",
+      "Bash(bash scripts/trigger_publish.sh*)"
     ],
     "ask": []
   },
