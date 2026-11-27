@@ -64,7 +64,12 @@ GRAIN_STRENGTH = 6  # 輕微顆粒感，0 關閉
 SHADOW_LIFT = 16  # 陰影提亮：避免暗部被壓成死黑，0 關閉
 SHADOW_COMPRESS = 0.94  # 配合 SHADOW_LIFT 做的輕微壓縮，讓整體色階不過曝
 
-AUTO_MARGIN = 1.18  # auto-detect 偵測到主體後，裁切框比主體再大 18%，留一點呼吸空間
+# auto-detect 的目標構圖，取自使用者 2026-11-06 定案的「波羅咕咾肉」：碗的直徑約佔
+# 畫面寬度 89%（比畫面高度還大，上下碗緣會稍微出框）、水平置中、碗中心在畫面高度
+# 57% 的位置（略偏下）。所有新照片都盡量對齊這個位置與大小，讓版面構圖一致。
+TARGET_SUBJECT_WIDTH = 0.89
+TARGET_CENTER_Y = 0.57
+MAX_EXTRA_TIGHTEN = 1.1  # 為了讓主體對準目標位置，最多只額外裁緊 10%
 
 
 def _load_manifest() -> dict:
@@ -139,6 +144,70 @@ def _detect_bbox_box(gray, small, sw: int, sh: int) -> tuple[float, float, float
     return (cx / sw, cy / sh, (w / 2) / sw, (h / 2) / sh)
 
 
+def _detect_plate_box(small, sw: int, sh: int) -> tuple[float, float, float, float] | None:
+    """找碗盤的「外緣」（不是食物範圍），碗盤超出畫面也能估出完整的圓。
+    做法：使用者都在同一類木桌上拍，先從畫面最外圈像素用 k-means 找出桌面色，
+    主要用色度（木頭偏橘、瓷碗偏中性）判斷哪些像素不是桌面；取最靠近中央的那一大塊
+    當作碗盤，拿它輪廓上「沒有貼著畫面邊界、又在凸包上」的點做最小平方法擬合圓。
+    兩個碗並排、深色碗盤這類情況會不準，呼叫端要有退路。"""
+    lab = cv2.cvtColor(cv2.GaussianBlur(small, (9, 9), 0), cv2.COLOR_BGR2LAB).astype("float32")
+    b = max(4, int(min(sh, sw) * 0.03))
+    border = np.concatenate([
+        lab[:b].reshape(-1, 3), lab[-b:].reshape(-1, 3),
+        lab[:, :b].reshape(-1, 3), lab[:, -b:].reshape(-1, 3),
+    ])
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1)
+    _, labels, centers = cv2.kmeans(border, 3, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
+    labels = labels.ravel()
+    table_idx = np.bincount(labels).argmax()
+    table = centers[table_idx]
+    weight = np.array([0.35, 1.0, 1.0], "float32")  # 亮度權重低：白瓷碗緣和淺色木桌亮度很接近
+    dist = np.linalg.norm((lab - table) * weight, axis=2)
+    border_dist = np.linalg.norm((border - table) * weight, axis=1)
+    threshold = max(8.0, float(np.percentile(border_dist[labels == table_idx], 95)) * 1.15)
+
+    mask = (dist > threshold).astype("uint8") * 255
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((7, 7), "uint8"))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((15, 15), "uint8"))
+    n, comp_labels, stats, cents = cv2.connectedComponentsWithStats(mask)
+    if n < 2:
+        return None
+    best = max(
+        range(1, n),
+        key=lambda i: stats[i, 4] / (sw * sh)
+        - 0.8 * math.hypot(cents[i][0] / sw - 0.5, cents[i][1] / sh - 0.5),
+    )
+    if stats[best, 4] < sw * sh * 0.15:
+        return None
+    contours, _ = cv2.findContours(
+        (comp_labels == best).astype("uint8"), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+    )
+    contour = max(contours, key=cv2.contourArea).reshape(-1, 2)
+    hull = cv2.convexHull(contour.astype("int32"))
+    margin = 2
+    tol = max(3.0, min(sw, sh) * 0.01)
+    pts = np.array([
+        (x, y) for x, y in contour
+        if margin < x < sw - 1 - margin and margin < y < sh - 1 - margin
+        and abs(cv2.pointPolygonTest(hull, (float(x), float(y)), True)) < tol
+    ], dtype="float64")
+    if len(pts) < 30:
+        return None
+    # 圓方程式 x^2 + y^2 + Dx + Ey + F = 0 的最小平方解
+    a = np.c_[pts[:, 0], pts[:, 1], np.ones(len(pts))]
+    rhs = -(pts[:, 0] ** 2 + pts[:, 1] ** 2)
+    d, e, f = np.linalg.lstsq(a, rhs, rcond=None)[0]
+    cx, cy = -d / 2, -e / 2
+    r2 = cx * cx + cy * cy - f
+    if r2 <= 0:
+        return None
+    r = math.sqrt(r2)
+    m = min(sw, sh)
+    if not (0.25 * m <= r <= 0.9 * max(sw, sh)) or not (0 < cx < sw and 0 < cy < sh):
+        return None
+    return (cx / sw, cy / sh, r / sw, r / sh)
+
+
 def _detect_subject_box(image: Image.Image) -> tuple[float, float, float, float] | None:
     """自動偵測畫面主體（通常是圓盤/碗）大概的範圍。回傳 (cx, cy, half_w, half_h)，
     四個數字都是相對原圖寬高的比例（0~1）。偵測不到就回傳 None，呼叫端要有
@@ -155,6 +224,10 @@ def _detect_subject_box(image: Image.Image) -> tuple[float, float, float, float]
     scale = 800 / max(width, height)
     small = cv2.resize(array, (max(1, round(width * scale)), max(1, round(height * scale))))
     sh, sw = small.shape[:2]
+
+    plate_box = _detect_plate_box(small, sw, sh)
+    if plate_box:
+        return plate_box  # 優先用碗盤外緣，構圖才能跟參考圖（碗佔畫面寬 89%）對齊
 
     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
     gray = cv2.medianBlur(gray, 5)
@@ -173,16 +246,20 @@ def _detect_subject_box(image: Image.Image) -> tuple[float, float, float, float]
 
 
 def _auto_fit_params(
-    image: Image.Image, orientation: str, margin: float = AUTO_MARGIN
-) -> tuple[float, float, float] | None:
-    """給定一個（可能已經旋轉過的）圖和目標方向，偵測主體後算出能讓主體置中、
-    周圍留 margin 倍空間的 offset_x/offset_y/zoom。偵測失敗回傳 None。"""
+    image: Image.Image, orientation: str
+) -> tuple[float, float, float, float] | None:
+    """給定一個（可能已經旋轉過的）圖和目標方向，偵測主體後算出符合目標構圖
+    （TARGET_SUBJECT_WIDTH / TARGET_CENTER_Y）的 offset_x/offset_y/zoom。
+    原圖邊緣空間不夠時，寧可裁緊一點（zoom 變大）也要維持主體位置，不讓主體偏掉。
+    回傳 (offset_x, offset_y, zoom, fill)，fill 是主體實際佔裁切框寬度的比例，
+    給呼叫端比較不同旋轉方向哪個最接近目標構圖。偵測失敗回傳 None。"""
     box = _detect_subject_box(image)
     if box is None:
         return None
     cx, cy, half_w, half_h = box
-    if half_w > 0.5 or half_h > 0.5:
-        return None  # 偵測到的範圍比整張圖還大，幾何上不合理，當作偵測失敗
+    if half_w > 0.9 or half_h > 0.9:
+        # 碗盤本來就可能略超出畫面（近拍），但大到這種程度就不合理，當作偵測失敗
+        return None
     width, height = image.size
 
     if orientation == "landscape":
@@ -190,26 +267,42 @@ def _auto_fit_params(
     else:
         ratio_w, ratio_h = RATIO_SHORT, RATIO_LONG
 
+    aspect = ratio_w / ratio_h
     subject_w = half_w * 2 * width
-    subject_h = half_h * 2 * height
-    # 需要的裁切框至少要蓋過主體（含 margin），裁切框本身維持目標比例
-    need_w = subject_w * margin
-    need_h = subject_h * margin
-    if need_w / need_h > ratio_w / ratio_h:
-        crop_w = need_w
-        crop_h = need_w * ratio_h / ratio_w
+    sx, sy = cx * width, cy * height  # 主體中心（像素）
+
+    if width / height > aspect:
+        base_w = height * aspect
     else:
-        crop_h = need_h
-        crop_w = need_h * ratio_w / ratio_h
+        base_w = width
 
-    base_w = min(width, height * ratio_w / ratio_h) if width / height > ratio_w / ratio_h else width
-    base_h = base_w * ratio_h / ratio_w if width / height > ratio_w / ratio_h else height
-    # 跟「原圖能裁到的最大範圍」比較，算出對應的 zoom（zoom 愈大代表裁得愈緊）
-    zoom = max(1.0, min(base_w / crop_w, base_h / crop_h))
+    # 目標裁切框寬度：讓主體寬度佔裁切框 TARGET_SUBJECT_WIDTH
+    crop_w = min(subject_w / TARGET_SUBJECT_WIDTH, base_w)
+    # 為了維持主體位置最多只多裁 MAX_EXTRA_TIGHTEN；再緊就畫面太擠，寧可讓位置偏一點
+    # （超出原圖的部分由 compute_crop_box 把裁切框推回圖內）
+    min_crop_w = crop_w / MAX_EXTRA_TIGHTEN
+    # 主體要落在裁切框的 (50%, TARGET_CENTER_Y)，所以裁切框中心在主體中心上方一點；
+    # 若裁切框會超出原圖邊界，就縮小裁切框（裁緊）直到放得下，維持主體位置不變
+    for _ in range(3):
+        crop_h = crop_w / aspect
+        box_cx = sx
+        box_cy = sy - (TARGET_CENTER_Y - 0.5) * crop_h
+        max_w = 2 * min(box_cx, width - box_cx)
+        max_h = 2 * min(box_cy, height - box_cy)
+        crop_w = max(min_crop_w, min(crop_w, max_w, max_h * aspect))
+    crop_h = crop_w / aspect
+    box_cy = sy - (TARGET_CENTER_Y - 0.5) * crop_h
 
-    offset_x = (cx * width - width / 2) / width
-    offset_y = (cy * height - height / 2) / height
-    return (round(float(offset_x), 3), round(float(offset_y), 3), round(float(zoom), 3))
+    zoom = max(1.0, base_w / crop_w)
+    offset_x = (sx - width / 2) / width
+    offset_y = (box_cy - height / 2) / height
+    fill = subject_w / crop_w
+    return (
+        round(float(offset_x), 3),
+        round(float(offset_y), 3),
+        round(float(zoom), 3),
+        float(fill),
+    )
 
 
 def _detect_tilt_angle(image: Image.Image) -> float | None:
@@ -258,9 +351,8 @@ def auto_detect_params(input_path: Path) -> dict | None:
     """自動幫一張照片決定 offset_x/offset_y/zoom/rotate。分兩步：
     1) 先找畫面裡的水平參考線，算出鏡頭本身歪了幾度（deskew），不確定就當作 0。
     2) 在這個已經校正過水平的基礎上，分別試「不轉」「轉 90 度」「轉 -90（270）度」
-       三種方向偵測主體、試算需要的 zoom，選 zoom 最小（代表主體跟目標比例最合、
-       不用裁太緊）的那個方向，而不是只固定往同一個方向轉——避免每次都往同一個
-       方向轉導致某些照片的上下左右跑錯邊。
+       三種方向偵測主體、試算裁切，選主體大小最接近目標構圖的方向（平手時不轉），
+       而不是只固定往同一個方向轉——避免某些照片的上下左右跑錯邊。
     三種方向都偵測不到主體的話回傳 None，呼叫端要退回手動模式。"""
     image = _load_image(input_path)
     tilt = _detect_tilt_angle(image) or 0.0
@@ -276,7 +368,16 @@ def auto_detect_params(input_path: Path) -> dict | None:
     if not candidates:
         return None
 
-    rotate, (offset_x, offset_y, zoom) = min(candidates, key=lambda c: c[1][2])
+    # 選「主體大小最接近目標構圖」的方向；差距在 0.03 內視為平手，優先不轉（原圖方向
+    # 通常就是拍攝者想要的構圖）。不能直接比 zoom：轉 90 度後裁切基準跟著變，zoom 數字
+    # 在不同方向之間不可比，以前這樣比會讓橫幅原圖被轉成直的再裁，畫面裁得太緊。
+    def score(c):
+        rotate_amount, fit = c
+        miss = abs(fit[3] - TARGET_SUBJECT_WIDTH)
+        rotated = abs(((rotate_amount - tilt) + 180) % 360 - 180) > 1
+        return (round(miss / 0.03), rotated, fit[2])
+
+    rotate, (offset_x, offset_y, zoom, _fill) = min(candidates, key=score)
     return {
         "rotate": round(rotate, 2),
         "offset_x": offset_x,

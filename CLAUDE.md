@@ -27,8 +27,9 @@
 ## 核心工具：scripts/process_photo.py
 
 - `list-new` — 列出 `input/` 裡還沒出現在 `output/manifest.json` 的新照片。
-- `auto-detect <路徑>` — 用電腦視覺自動偵測畫面主體（優先找圓盤/碗的邊緣，找不到就用飽和度+邊緣對比），印出建議的 `offset_x`/`offset_y`/`zoom`/`rotate`（JSON，`detected: false` 代表偵測失敗，要退回手動模式）。目的是讓裁切流程更自動化，減少每張都要手動試 offset/zoom/rotate 的次數；只對**真正的原始照片**有意義，拿 `output/` 的成品圖重跑會裁過頭（見上面「已知事件」）。
-  - `rotate` 的判斷分兩層：先用 Hough 直線偵測找畫面裡的水平參考物（桌緣、木紋等）算出鏡頭本身歪了幾度（`deskew_degrees`，找不到夠可信的參考線就是 0，不會亂猜）；接著在「不轉」「+90」「-90（即 270）」三個方向都各自試算需要的 zoom，選 zoom 最小的方向——**不是固定往同一個方向轉**，因為固定方向在某些照片會轉錯邊、讓結果不穩定。最終 `rotate` 是「微幅校正角度 + 90 的倍數」的合併結果，所以現在 `--rotate` 可以是任意角度，不是只有 0/90/180/270 四選一。
+- `auto-detect <路徑>` — 用電腦視覺自動偵測畫面主體（優先用「桌面色分割 + 擬合圓」找碗盤外緣，碗盤超出畫面也能估；失敗才退回霍夫圓形/飽和度+邊緣對比），印出建議的 `offset_x`/`offset_y`/`zoom`/`rotate`（JSON，`detected: false` 代表偵測失敗，要退回手動模式）。目的是讓裁切流程更自動化，減少每張都要手動試 offset/zoom/rotate 的次數；只對**真正的原始照片**有意義，拿 `output/` 的成品圖重跑會裁過頭（見上面「已知事件」）。
+  - **目標構圖（使用者 2026-11-06 要求每張都盡量跟「波羅咕咾肉」一樣）**：碗盤直徑佔畫面寬度約 89%（`TARGET_SUBJECT_WIDTH`）、水平置中、碗盤中心在畫面高度 57%（`TARGET_CENTER_Y`，略偏下，上緣會稍微出框）。原圖邊緣不夠時會多裁緊一點來維持位置，但最多 10%（`MAX_EXTRA_TIGHTEN`），再多就讓位置偏一點。原圖本身拍得比參考圖近時，碗盤會比目標大（不能拉遠）。兩個碗並排、深色碗盤這類偵測不準的，預覽時手動調。
+  - `rotate` 的判斷分兩層：先用 Hough 直線偵測找畫面裡的水平參考物（桌緣、木紋等）算出鏡頭本身歪了幾度（`deskew_degrees`，找不到夠可信的參考線就是 0，不會亂猜）；接著在「不轉」「+90」「-90（即 270）」三個方向都各自試算，選主體大小最接近目標構圖的方向（平手時不轉；不能比 zoom，因為轉 90 度後 zoom 的基準不同）——**不是固定往同一個方向轉**，因為固定方向在某些照片會轉錯邊、讓結果不穩定。最終 `rotate` 是「微幅校正角度 + 90 的倍數」的合併結果，所以現在 `--rotate` 可以是任意角度，不是只有 0/90/180/270 四選一。
 - `preview <路徑> [--offset-x F] [--offset-y F] [--zoom F]` — 產生裁切+濾鏡後的預覽圖到 `.cache/previews/`。
 - `finalize <路徑> --name <菜名> [--offset-x F] [--offset-y F] [--zoom F]` — 同樣的處理邏輯，輸出到 `output/<菜名>.jpg`，並把 `input 檔名 -> 菜名` 寫進 `manifest.json`。沒給 `--name` 的話會退回用 input 原始檔名（不建議，新照片都應該給 `--name`）。
 - 單張例外參數：`--warmth`/`--sharpen`/`--brightness` 倍率，只影響那一張、不碰全域濾鏡設定；`--rotate {0,90,180,270}` 在裁切前先轉正直幅照片，常能保留更完整的原圖範圍。`auto-detect` 算出的 `rotate` 建議也是這個參數。
@@ -46,7 +47,7 @@
 
 ## 自動發 IG：scripts/publish_ig.py + GitHub Actions
 
-- 使用者要求**完全自動發文**（發出前不再經過人工確認）：GitHub Actions（`.github/workflows/ig-publish.yml`）每天跑 `publish_ig.py publish`，每 3 天在**美東時間 19:00**（使用者在美東；`America/New_York`，自動處理夏令/冬令時間）發一篇；貼文文字**只有菜名**（撞名用的尾數字會去掉）。
+- 使用者要求**完全自動發文**（發出前不再經過人工確認）：GitHub Actions（`.github/workflows/ig-publish.yml`）每天跑 `publish_ig.py publish`，**每天**在**美東時間 19:00**（使用者在美東；`America/New_York`，自動處理夏令/冬令時間）發一篇；貼文文字**只有菜名**（撞名用的尾數字會去掉）。
 - 發文順序 = `manifest.json` 的定案順序，新 finalize 的照片自動排到最後。進度記在 `output/publish_state.json`，Actions 發完會自己 commit 回 repo。
 - 使用者 2026-10-16 起**不再用 Meta Business Suite 排程，發文全部交給這套自動流程**。`set-priority` 可指定插隊優先發的菜名；`schedule` 列出接下來的預計發文日；在別處手動發過的用 `mark-posted <菜名>` 標記避免重發；`set-not-before` 設定最早自動發文時間。
 - 用的是 Instagram 官方 Content Publishing API，它要從公開網址抓圖，所以這個 repo 是**公開的** GitHub repo，圖片透過 GitHub Pages 提供（`IMAGE_BASE_URL`）。`input/`、`.cache/`、`.venv/` 不進版控（見 `.gitignore`）。token 放在 GitHub Secrets（`IG_USER_ID`、`IG_ACCESS_TOKEN`），不能寫進任何檔案。
