@@ -68,5 +68,6 @@ jobs:
             git config user.email "41898314+github-actions[bot]@users.noreply.github.com"
             git add output/publish_state.json
             git commit -m "Record IG post"
-            git push
+            # 發文期間 repo 可能有人推了別的 commit，先 rebase 再推，推失敗會導致下次重發同一張
+            for i in 1 2 3; do git pull --rebase && git push && break; sleep 5; done
           fi
